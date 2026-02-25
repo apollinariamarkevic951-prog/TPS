@@ -2,7 +2,7 @@ services:
   db:
     image: postgres:16
     container_name: tps_db
-    restart: unless-stopped
+    restart: always
     environment:
       POSTGRES_DB: tps
       POSTGRES_USER: tps
@@ -11,7 +11,26 @@ services:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  bot:
+    build: .
+    container_name: tps_bot
+    restart: always
+    depends_on:
+      - db
+    environment:
+      BOT_TOKEN: ${BOT_TOKEN}
+      GIGACHAT_AUTH_KEY: ${GIGACHAT_AUTH_KEY}
+      GIGACHAT_SCOPE: ${GIGACHAT_SCOPE}
+      GIGACHAT_MODEL: ${GIGACHAT_MODEL}
+      DB_HOST: db
+    command: >
+      sh -c "
+      sleep 5 &&
+      python scripts/load.py &&
+      python -m app.bot
+      "
 
 volumes:
   pgdata:

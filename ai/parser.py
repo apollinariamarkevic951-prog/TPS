@@ -1,3 +1,4 @@
+import os
 import json
 import re
 from pathlib import Path
@@ -52,9 +53,9 @@ def _fetch_one_number(sql, params=None):
         dbname="tps",
         user="tps",
         password="tps",
-        host="localhost",
+        host=os.getenv("DB_HOST", "localhost"),
         port=5432,
-    )
+        )
     try:
         with conn:
             with conn.cursor() as cur:
