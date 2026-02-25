@@ -1,3 +1,4 @@
+import os
 import json
 from datetime import datetime
 import psycopg2
@@ -13,9 +14,9 @@ def main():
         dbname="tps",
         user="tps",
         password="tps",
-        host="localhost",
+        host=os.getenv("DB_HOST", "localhost"),
         port=5432,
-    )
+        )
 
     with open("data/videos.json", "r", encoding="utf-8") as f:
         payload = json.load(f)
