@@ -20,7 +20,7 @@ async def start(message: Message):
 
 @dp.message()
 async def any_text(message: Message):
-    # Пока без логики: просто возвращаем число из базы
+    
     n = fetch_one_int("SELECT COUNT(*) FROM videos;")
     await message.answer(str(n))
 
