@@ -2,6 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && update-ca-certificates
+
+ENV PYTHONUNBUFFERED=1
+
 COPY . .
 
 RUN pip install --no-cache-dir \
@@ -10,4 +16,4 @@ RUN pip install --no-cache-dir \
     requests \
     python-dotenv
 
-CMD ["python", "-m", "app.bot"]
+CMD ["python", "app/bot.py"]
