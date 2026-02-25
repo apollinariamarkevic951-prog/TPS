@@ -12,19 +12,46 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tps -d tps"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  loader:
+    build: .
+    container_name: tps_loader
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: tps
+      DB_USER: tps
+      DB_PASSWORD: tps
+    command: python scripts/load.py
+    restart: "no"
 
   bot:
     build: .
     container_name: tps_bot
     restart: always
     depends_on:
-      - db
+      db:
+        condition: service_healthy
+      loader:
+        condition: service_completed_successfully
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       GIGACHAT_AUTH_KEY: ${GIGACHAT_AUTH_KEY}
       GIGACHAT_SCOPE: ${GIGACHAT_SCOPE}
       GIGACHAT_MODEL: ${GIGACHAT_MODEL}
       DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: tps
+      DB_USER: tps
+      DB_PASSWORD: tps
     command: python -m app.bot
 
 volumes:

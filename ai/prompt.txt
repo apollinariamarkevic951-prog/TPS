@@ -28,22 +28,23 @@
 - created_at (timestamp)
 - updated_at (timestamp)
 
-Надо вернуть план в формате:
+ННадо вернуть план в формате:
 
 {
   "type": "...",
+  "metric": null или "views" или "likes" или "comments" или "reports",
   "creator_id": null или строка,
   "date": null или "YYYY-MM-DD",
   "date_from": null или "YYYY-MM-DD",
   "date_to": null или "YYYY-MM-DD",
-  "views_gt": null или число
+  "value_gt": null или число
 }
 
 type может быть только:
 - count_all_videos
-- count_videos_views_gt
-- sum_views_growth_on_date
-- count_distinct_videos_with_new_views_on_date
+- count_videos_metric_gt
+- sum_metric_growth_on_date
+- count_distinct_videos_with_new_metric_on_date
 - count_videos_by_creator_and_period
 
 Правила:

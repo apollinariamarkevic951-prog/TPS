@@ -9,10 +9,17 @@ load_dotenv()
 
 ALLOWED_TYPES = {
     "count_all_videos",
-    "count_videos_views_gt",
-    "sum_views_growth_on_date",
-    "count_distinct_videos_with_new_views_on_date",
+    "count_videos_metric_gt",
+    "sum_metric_growth_on_date",
+    "count_distinct_videos_with_new_metric_on_date",
     "count_videos_by_creator_and_period",
+}
+
+METRICS = {
+    "views": ("views_count", "delta_views_count"),
+    "likes": ("likes_count", "delta_likes_count"),
+    "comments": ("comments_count", "delta_comments_count"),
+    "reports": ("reports_count", "delta_reports_count"),
 }
 
 
@@ -74,30 +81,36 @@ def _plan_to_sql(plan):
     if t == "count_all_videos":
         return "SELECT COUNT(*) FROM videos;", ()
 
-    if t == "count_videos_views_gt":
-        n = plan.get("views_gt")
-        if n is None:
+    if t == "count_videos_metric_gt":
+        metric = plan.get("metric")
+        value_gt = plan.get("value_gt")
+        if metric not in METRICS or value_gt is None:
             return None
-        return "SELECT COUNT(*) FROM videos WHERE views_count > %s;", (int(n),)
+        col, _ = METRICS[metric]
+        return f"SELECT COUNT(*) FROM videos WHERE {col} > %s;", (int(value_gt),)
 
-    if t == "sum_views_growth_on_date":
+    if t == "sum_metric_growth_on_date":
+        metric = plan.get("metric")
         d = plan.get("date")
-        if not d:
+        if metric not in METRICS or not d:
             return None
+        _, delta_col = METRICS[metric]
         return (
-            "SELECT COALESCE(SUM(delta_views_count), 0) "
+            f"SELECT COALESCE(SUM({delta_col}), 0) "
             "FROM video_snapshots WHERE created_at::date = %s;",
             (d,),
         )
 
-    if t == "count_distinct_videos_with_new_views_on_date":
+    if t == "count_distinct_videos_with_new_metric_on_date":
+        metric = plan.get("metric")
         d = plan.get("date")
-        if not d:
+        if metric not in METRICS or not d:
             return None
+        _, delta_col = METRICS[metric]
         return (
             "SELECT COUNT(DISTINCT video_id) "
             "FROM video_snapshots "
-            "WHERE created_at::date = %s AND delta_views_count > 0;",
+            f"WHERE created_at::date = %s AND {delta_col} > 0;",
             (d,),
         )
 
@@ -114,7 +127,6 @@ def _plan_to_sql(plan):
         )
 
     return None
-
 
 def get_number_from_text(user_text):
     prompt = _load_prompt()
