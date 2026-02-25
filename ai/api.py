@@ -1,8 +1,11 @@
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+from dotenv import load_dotenv
 import os
 import time
 import uuid
 import requests
-
+load_dotenv()
 _token = None
 _token_expires_at = 0
 
@@ -14,7 +17,7 @@ def _get_access_token():
         return _token
 
     auth_key = os.getenv("GIGACHAT_AUTH_KEY")
-    scope = os.getenv("GIGACHAT_SCOPE", "GIGACHAT_API_PERS")
+    scope = "GIGACHAT_API_PERS"
 
     if not auth_key:
         return None
@@ -43,7 +46,7 @@ def ask_llm(prompt, user_text):
     if not token:
         return None
 
-    model = os.getenv("GIGACHAT_MODEL", "GigaChat")
+    model = "GigaChat"
 
     url = "https://gigachat.devices.sberbank.ru/api/v1/chat/completions"
     headers = {

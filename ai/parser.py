@@ -2,9 +2,9 @@ import json
 import re
 from pathlib import Path
 import psycopg2
-
+from dotenv import load_dotenv
 from ai.api import ask_llm
-
+load_dotenv()
 
 ALLOWED_TYPES = {
     "count_all_videos",
