@@ -12,8 +12,8 @@ COPY . .
 
 RUN pip install --no-cache-dir \
     aiogram==3.4.1 \
-    psycopg2-binary \
-    requests \
+    aiohttp \
+    asyncpg \
     python-dotenv
 
-CMD ["python", "app/bot.py"]
+CMD ["python", "-m", "app.bot"]
