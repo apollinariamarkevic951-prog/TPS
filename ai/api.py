@@ -11,7 +11,7 @@ _token_expires_at: int = 0
 
 
 def _verify_ssl() -> bool:
-    # default: verify SSL
+    
     return os.getenv("GIGACHAT_VERIFY_SSL", "1").strip() not in ("0", "false", "no", "off")
 
 
