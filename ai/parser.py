@@ -55,6 +55,21 @@ def _clean_llm_json(raw: str) -> str:
     return raw.strip()
 
 
+def _as_date(v: Any) -> Optional[dt.date]:
+    if v is None:
+        return None
+    if isinstance(v, dt.date) and not isinstance(v, dt.datetime):
+        return v
+    if isinstance(v, str):
+        s = v.strip()
+        if _ISO_DATE_RE.match(s):
+            try:
+                return dt.date.fromisoformat(s)
+            except ValueError:
+                return None
+    return None
+
+
 def _coerce_param(v: Any) -> Any:
     if isinstance(v, str):
         s = v.strip()
@@ -81,10 +96,6 @@ async def _fetch_one_int(sql: str, params: Tuple[Any, ...]) -> int:
 
 
 def _plan_to_sql(plan: dict) -> Optional[Tuple[str, Tuple[Any, ...]]]:
-    """
-    Превращает безопасный JSON-план в SQL + параметры.
-    ВАЖНО: никаких "сырых" частей SQL от модели — только из allowlist + шаблоны.
-    """
     source = plan.get("source")
     action = plan.get("action")
     metric = plan.get("metric")
@@ -106,6 +117,9 @@ def _plan_to_sql(plan: dict) -> Optional[Tuple[str, Tuple[Any, ...]]]:
         date_from = date
         date_to = date
 
+    d_from = _as_date(date_from)
+    d_to = _as_date(date_to)
+
     where: List[str] = []
     params: List[Any] = []
 
@@ -119,12 +133,14 @@ def _plan_to_sql(plan: dict) -> Optional[Tuple[str, Tuple[Any, ...]]]:
             where.append(f"{col} > ${len(params) + 1}")
             params.append(int(gt))
 
-        if date_from:
+        if d_from:
             where.append(f"video_created_at >= ${len(params) + 1}")
-            params.append(str(date_from))
-        if date_to:
-            where.append(f"video_created_at < (${len(params) + 1} + interval '1 day')")
-            params.append(str(date_to))
+            params.append(d_from)
+
+        if d_to:
+            end_exclusive = d_to + dt.timedelta(days=1)
+            where.append(f"video_created_at < ${len(params) + 1}")
+            params.append(end_exclusive)
 
         base_where = (" WHERE " + " AND ".join(where)) if where else ""
 
@@ -146,14 +162,14 @@ def _plan_to_sql(plan: dict) -> Optional[Tuple[str, Tuple[Any, ...]]]:
             return None
 
         return None
-
+    
     if source == "snapshots":
-        if date_from:
+        if d_from:
             where.append(f"created_at::date >= ${len(params) + 1}")
-            params.append(str(date_from))
-        if date_to:
+            params.append(d_from)
+        if d_to:
             where.append(f"created_at::date <= ${len(params) + 1}")
-            params.append(str(date_to))
+            params.append(d_to)
 
         if metric in _METRIC_TO_SNAPSHOTS_COL and gt is not None:
             final_col, delta_col = _METRIC_TO_SNAPSHOTS_COL[metric]
