@@ -2,8 +2,11 @@ import json
 import os
 import re
 from pathlib import Path
+
 from dotenv import load_dotenv
 import asyncpg
+import datetime as dt
+from typing import Any
 
 from ai.api import ask_llm
 
@@ -20,49 +23,19 @@ _METRIC_TO_VIDEOS_COL = {
     "reports": "reports_count",
 }
 
-_METRIC_TO_SNAP_DELTA_COL = {
-    "views": "delta_views_count",
-    "likes": "delta_likes_count",
-    "comments": "delta_comments_count",
-    "reports": "delta_reports_count",
+_METRIC_TO_SNAPSHOTS_COL = {
+    "views": ("final_views_count", "delta_views_count"),
+    "likes": ("final_likes_count", "delta_likes_count"),
+    "comments": ("final_comments_count", "delta_comments_count"),
+    "reports": ("final_reports_count", "delta_reports_count"),
 }
 
-
-def _load_prompt() -> str:
-    return Path(__file__).with_name("prompt.txt").read_text(encoding="utf-8")
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _extract_json(text: str | None) -> dict | None:
-    if not text:
-        return None
-
-    s = text.strip()
-
-    if s.startswith("```"):
-        s = re.sub(r"^```[a-zA-Z]*", "", s).strip()
-        if s.endswith("```"):
-            s = s[:-3].strip()
-
-    try:
-        return json.loads(s)
-    except Exception:
-        pass
-
-    start = s.find("{")
-    end = s.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-
-    chunk = s[start : end + 1]
-    try:
-        return json.loads(chunk)
-    except Exception:
-        return None
-
-
-def _db_cfg():
+def _db_cfg() -> dict:
     return dict(
-        host=os.getenv("DB_HOST", "localhost"),
+        host=os.getenv("DB_HOST", "db"),
         port=int(os.getenv("DB_PORT", "5432")),
         database=os.getenv("DB_NAME", "tps"),
         user=os.getenv("DB_USER", "tps"),
@@ -70,9 +43,29 @@ def _db_cfg():
     )
 
 
+def _coerce_param(v: Any) -> Any:
+    """Convert string ISO dates/datetimes to python date/datetime for asyncpg."""
+    if isinstance(v, str):
+        s = v.strip()
+        # YYYY-MM-DD -> date
+        if _ISO_DATE_RE.match(s):
+            try:
+                return dt.date.fromisoformat(s)
+            except ValueError:
+                pass
+        # ISO datetime (optionally with Z)
+        try:
+            return dt.datetime.fromisoformat(s.replace("Z", "+00:00"))
+        except ValueError:
+            return v
+    return v
+
+
 async def _fetch_one_int(sql: str, params: tuple):
     conn = await asyncpg.connect(**_db_cfg())
     try:
+        # FIX: asyncpg expects python date/datetime for date/timestamp params (not strings)
+        params = tuple(_coerce_param(p) for p in params)
         val = await conn.fetchval(sql, *params)
         if val is None:
             return 0
@@ -94,113 +87,149 @@ def _plan_to_sql(plan: dict) -> tuple[str, tuple] | None:
         return None
 
     creator_id = plan.get("creator_id")
-    date = plan.get("date")
     date_from = plan.get("date_from")
     date_to = plan.get("date_to")
+    date = plan.get("date")
     gt = plan.get("gt")
-    only_pos = plan.get("only_positive_delta")
 
-    where = []
-    params = []
+    params: list[Any] = []
+    where: list[str] = []
 
-    def add(cond: str, *p):
-        where.append(cond)
-        params.extend(p)
+    # normalize date filters
+    if isinstance(date, str) and _ISO_DATE_RE.match(date):
+        # single day
+        date_from = date
+        date_to = date
+
+    if creator_id:
+        where.append("creator_id = $" + str(len(params) + 1))
+        params.append(str(creator_id))
 
     if source == "videos":
-        table = "videos"
+        # filters for videos table
+        if metric in _METRIC_TO_VIDEOS_COL and gt is not None:
+            col = _METRIC_TO_VIDEOS_COL[metric]
+            where.append(f"{col} > $" + str(len(params) + 1))
+            params.append(int(gt))
 
-        if date:
-            add("video_created_at::date = $%d" % (len(params) + 1), date)
-        if date_from and date_to:
-            add("video_created_at::date BETWEEN $%d AND $%d" % (len(params) + 1, len(params) + 2), date_from, date_to)
+        if date_from:
+            where.append("video_created_at >= $" + str(len(params) + 1))
+            params.append(date_from)
+        if date_to:
+            # inclusive end day
+            where.append("video_created_at < ($" + str(len(params) + 1) + " + interval '1 day')")
+            params.append(date_to)
 
-        if creator_id:
-            add("creator_id = $%d" % (len(params) + 1), creator_id)
+        base_where = (" WHERE " + " AND ".join(where)) if where else ""
 
-        if action in ("sum_final",) and metric == "videos":
-            return None
+        if action == "count":
+            return f"SELECT count(*) FROM videos{base_where};", tuple(params)
 
-        if action in ("count", "count_distinct"):
-            if gt is not None:
-                col = _METRIC_TO_VIDEOS_COL.get("views") if metric == "videos" else _METRIC_TO_VIDEOS_COL.get(metric)
-                if not col:
-                    return None
-                add(f"{col} > $%d" % (len(params) + 1), int(gt))
+        if action == "count_distinct":
+            # distinct by video id in videos table is just count(distinct id)
+            return f"SELECT count(DISTINCT id) FROM videos{base_where};", tuple(params)
 
-            select = "COUNT(*)" if action == "count" else "COUNT(DISTINCT id)"
-            sql = f"SELECT {select} FROM {table}"
-        elif action == "sum_final":
+        if action in {"sum_final", "sum_delta"}:
+            # no delta columns in videos; only sum final metric
+            if metric == "videos":
+                return f"SELECT count(*) FROM videos{base_where};", tuple(params)
             col = _METRIC_TO_VIDEOS_COL.get(metric)
             if not col:
                 return None
-            sql = f"SELECT COALESCE(SUM({col}), 0) FROM {table}"
-        else:
+            return f"SELECT COALESCE(sum({col}), 0) FROM videos{base_where};", tuple(params)
+
+        return None
+
+    # snapshots source
+    if source == "snapshots":
+        # snapshot_date filters
+        if date_from:
+            where.append("snapshot_date >= $" + str(len(params) + 1))
+            params.append(date_from)
+        if date_to:
+            where.append("snapshot_date <= $" + str(len(params) + 1))
+            params.append(date_to)
+
+        # optional "gt" for delta metric only (e.g., delta_views_count > N)
+        if metric in _METRIC_TO_SNAPSHOTS_COL and gt is not None:
+            _, delta_col = _METRIC_TO_SNAPSHOTS_COL[metric]
+            where.append(f"{delta_col} > $" + str(len(params) + 1))
+            params.append(int(gt))
+
+        base_where = (" WHERE " + " AND ".join(where)) if where else ""
+
+        if action == "count":
+            return f"SELECT count(*) FROM video_snapshots{base_where};", tuple(params)
+
+        if action == "count_distinct":
+            return f"SELECT count(DISTINCT video_id) FROM video_snapshots{base_where};", tuple(params)
+
+        if metric == "videos":
+            # treat as count of distinct videos in snapshots
+            if action == "sum_final":
+                return f"SELECT count(DISTINCT video_id) FROM video_snapshots{base_where};", tuple(params)
+            if action == "sum_delta":
+                return f"SELECT count(DISTINCT video_id) FROM video_snapshots{base_where};", tuple(params)
             return None
 
-        if where:
-            sql += " WHERE " + " AND ".join(where)
-        sql += ";"
-        return sql, tuple(params)
+        if metric in _METRIC_TO_SNAPSHOTS_COL:
+            final_col, delta_col = _METRIC_TO_SNAPSHOTS_COL[metric]
+            if action == "sum_final":
+                return f"SELECT COALESCE(sum({final_col}), 0) FROM video_snapshots{base_where};", tuple(params)
+            if action == "sum_delta":
+                return f"SELECT COALESCE(sum({delta_col}), 0) FROM video_snapshots{base_where};", tuple(params)
 
-    table = "video_snapshots"
-
-    join_videos = bool(creator_id)
-    from_clause = table + (" s JOIN videos v ON v.id = s.video_id" if join_videos else "")
-
-    if date:
-        col = "s.created_at" if join_videos else "created_at"
-        add(f"{col}::date = $%d" % (len(params) + 1), date)
-    if date_from and date_to:
-        col = "s.created_at" if join_videos else "created_at"
-        add(f"{col}::date BETWEEN $%d AND $%d" % (len(params) + 1, len(params) + 2), date_from, date_to)
-
-    if creator_id:
-        add("v.creator_id = $%d" % (len(params) + 1), creator_id)
-
-    if metric == "videos":
         return None
 
-    delta_col = _METRIC_TO_SNAP_DELTA_COL[metric]
-    col_ref = f"s.{delta_col}" if join_videos else delta_col
+    return None
 
-    if action == "sum_delta":
-        sql = f"SELECT COALESCE(SUM({col_ref}), 0) FROM {from_clause}"
-        if gt is not None:
-            add(f"{col_ref} > $%d" % (len(params) + 1), int(gt))
-    elif action == "count_distinct":
-        vid_ref = "s.video_id" if join_videos else "video_id"
-        sql = f"SELECT COUNT(DISTINCT {vid_ref}) FROM {from_clause}"
-        if only_pos is True:
-            add(f"{col_ref} > 0")
-        elif gt is not None:
-            add(f"{col_ref} > $%d" % (len(params) + 1), int(gt))
-    elif action == "count":
-        sql = f"SELECT COUNT(*) FROM {from_clause}"
-        if only_pos is True:
-            add(f"{col_ref} > 0")
-        elif gt is not None:
-            add(f"{col_ref} > $%d" % (len(params) + 1), int(gt))
-    else:
-        return None
 
-    if where:
-        sql += " WHERE " + " AND ".join(where)
-    sql += ";"
-    return sql, tuple(params)
+def _clean_llm_json(raw: str) -> str:
+    # remove ```json fences if present
+    raw = raw.strip()
+    raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.IGNORECASE)
+    raw = re.sub(r"\s*```$", "", raw)
+    return raw.strip()
+
+
+def _prompt() -> str:
+    # (не даю слишком длинный промпт, но оставляю структуру)
+    return (
+        "Ты помощник, который извлекает из русскоязычного запроса JSON-план для SQL.\n"
+        "Верни ТОЛЬКО JSON без текста.\n\n"
+        "Схема плана:\n"
+        "{\n"
+        '  "source": "videos" | "snapshots",\n'
+        '  "action": "count" | "count_distinct" | "sum_final" | "sum_delta",\n'
+        '  "metric": "videos" | "views" | "likes" | "comments" | "reports",\n'
+        '  "creator_id": string|null,\n'
+        '  "date": "YYYY-MM-DD"|null,\n'
+        '  "date_from": "YYYY-MM-DD"|null,\n'
+        '  "date_to": "YYYY-MM-DD"|null,\n'
+        '  "gt": number|null\n'
+        "}\n\n"
+        "Правила:\n"
+        "- source=videos: таблица videos, даты относятся к video_created_at.\n"
+        "- source=snapshots: таблица video_snapshots, даты относятся к snapshot_date.\n"
+        "- sum_final: суммируй final_* (для snapshots) или *_count (для videos).\n"
+        "- sum_delta: суммируй delta_* (только для snapshots).\n"
+        "- count_distinct для snapshots: DISTINCT video_id.\n"
+    )
 
 
 async def get_number_from_text(user_text: str) -> int:
-    prompt = _load_prompt()
+    prompt = _prompt()
     raw = await ask_llm(prompt, user_text or "")
+    raw = _clean_llm_json(raw)
 
-    plan = _extract_json(raw)
-    if not plan:
+    try:
+        plan = json.loads(raw)
+    except Exception:
+        # если LLM вернул мусор — безопасный ответ
         return 0
 
     res = _plan_to_sql(plan)
     if not res:
         return 0
-
     sql, params = res
     return await _fetch_one_int(sql, params)
