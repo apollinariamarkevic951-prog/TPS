@@ -1,94 +1,65 @@
-# TPS
-тестовое задание для ТПШ 
-# Telegram-бот для аналитики видео
+# Telegram-бот для подсчёта метрик по видео (TPS)
 
-## 1. Что делает проект
+## Что внутри
 
-Telegram-бот принимает текстовый вопрос на русском языке, преобразует его в структурированный запрос к базе данных и возвращает пользователю число.
+- **PostgreSQL** (таблицы `videos`, `video_snapshots`)
+- **Загрузчик данных** из JSON: `scripts/load.py`
+- **Telegram-бот** (aiogram 3): `app/bot.py`
+- **LLM (GigaChat)**: превращает текст → JSON-план (не генерирует SQL напрямую)
+- **SQL-исполнение**: `asyncpg` (асинхронно)
 
-Примеры:
-- «Сколько всего видео?»
-- «Сколько видео набрало больше 100000 просмотров?»
-- «На сколько просмотров выросли все видео 2025-11-28?»
+Структура:
+- `sql/init.sql` — создание таблиц
+- `data/videos.json` — пример JSON (в задании выдаётся архив с данными)
+- `scripts/load.py` — загрузка JSON → БД
+- `ai/prompt.txt` — описание схемы + формат JSON-плана
+- `ai/parser.py` — вызывает LLM, валидирует JSON-план, собирает безопасный SQL-шаблон, выполняет и возвращает число
+- `app/bot.py` — Telegram-бот (polling)
 
-## 2. Стек
+## Переменные окружения
 
-- Python 3.11
-- Telegram Bot API (aiogram 3)
-- PostgreSQL 16
-- Docker + Docker Compose
-- LLM: GigaChat
-- psycopg2, requests
+Секреты в репозиторий не кладутся.  
+Создай `.env` рядом с `compose.yml` по примеру `.env_example`.
 
-## 3. Архитектура
+Обязательные:
+- `BOT_TOKEN` — токен Telegram-бота (BotFather)
+- `GIGACHAT_AUTH_KEY` — ключ авторизации GigaChat (кабинет GigaChat)
 
-### Компоненты
-- app/ — Telegram-бот (получает сообщения, отправляет ответ).
-- ai/ — слой “понимания запроса”:
-  - prompt.txt — системный промпт (описание схемы и формат результата).
-  - api.py — запросы в GigaChat (получение access_token и chat completion).
-  - parser.py — извлекает JSON из ответа LLM, выбирает тип запроса, строит SQL и выполняет его.
-- sql/init.sql — создание таблиц (миграция/скрипт).
-- scripts/load.py — загрузка предоставленного JSON-файла в PostgreSQL.
+Остальные (есть дефолты):
+- `GIGACHAT_SCOPE` (по умолчанию `GIGACHAT_API_PERS`)
+- `GIGACHAT_MODEL` (по умолчанию `GigaChat`)
+- `GIGACHAT_VERIFY_SSL` (по умолчанию `1`)
+- `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `DB_PORT` (по умолчанию `tps/tps/tps/5432`)
+- `JSON_PATH` (по умолчанию `data/videos.json`)
+- `SKIP_TRUNCATE` (по умолчанию `0`)
 
-### Подход: текст → SQL
+## Запуск одной командой (Docker Compose)
 
-1) Пользователь пишет текст.  
-2) LLM возвращает JSON фиксированного формата:
-   - type — тип запроса (например count_all_videos)
-   - параметры (date, views_gt, creator_id, date_from, date_to)
-3) По type выбирается заранее заданный SQL-шаблон (в коде), подставляются параметры.  
-4) SQL выполняется в PostgreSQL, бот возвращает число.
-
-Такой подход уменьшает риск “галлюцинаций” SQL: модель не пишет SQL напрямую, она выбирает один из допустимых типов и параметры.
-
-## 4. Промпт и описание схемы
-
-Схема данных и требуемый формат JSON описаны в файле:
-- ai/prompt.txt
-
-В промпте перечислены таблицы videos и video_snapshots, поля и список допустимых type, чтобы модель возвращала только нужную структуру.
-
-## 5. Переменные окружения
-
-Секреты в репозиторий НЕ добавляются.  
-Нужно создать файл .env в корне (пример есть в .env_example).
-
-Переменные:
-
-- BOT_TOKEN — токен Telegram-бота (получить через BotFather).
-- GIGACHAT_AUTH_KEY — ключ авторизации GigaChat (получить в кабинете GigaChat).
-- GIGACHAT_SCOPE — обычно GIGACHAT_API_PERS
-- GIGACHAT_MODEL — обычно GigaChat
-- DB_HOST — db для docker compose (локально можно localhost)
-- DB_NAME, DB_USER, DB_PASSWORD, DB_PORT
-
-## 6. Запуск локально (Docker Compose)
-
-1) Установить Docker и Docker Compose.  
-2) Создать .env по примеру .env_example.  
-3) Запустить:
-
+```bash
 docker compose up --build
+```
 
-После этого:
-- поднимется PostgreSQL,
-- создадутся таблицы (sql/init.sql),
-- выполнится загрузка данных (scripts/load.py),
-- запустится Telegram-бот.
+Что произойдёт:
+1) Поднимется Postgres и выполнит `sql/init.sql`  
+2) Сервис `loader` загрузит JSON (`scripts/load.py`) в таблицы  
+3) Запустится Telegram-бот (`app/bot.py`)
 
-## 7. Остановка
+## Как устроено «текст → SQL»
 
-Остановить контейнеры:
+1) Пользователь пишет вопрос на русском.  
+2) LLM (GigaChat) возвращает JSON-план фиксированного формата (см. `ai/prompt.txt`).  
+3) Код **не принимает SQL от модели**. Вместо этого:
+   - проверяет `source/action/metric`,
+   - подставляет параметры в заранее заданные шаблоны,
+   - выполняет запрос в PostgreSQL.
+4) Бот отвечает **одним числом**.
 
-docker compose down
+## Загрузка данных вручную (если нужно)
 
-Остановить и удалить данные базы:
-
-docker compose down -v
-
-## 8. Загрузка данных вручную (если нужно)
-
-Если база уже запущена и нужно вручную загрузить JSON:
-
+Если не используешь compose, можно так:
+```bash
+export DB_HOST=localhost DB_NAME=tps DB_USER=tps DB_PASSWORD=tps DB_PORT=5432
 python scripts/load.py
+```
+
+(по умолчанию загрузит `data/videos.json`, можно указать `JSON_PATH=/path/to/videos.json`)

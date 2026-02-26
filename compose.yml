@@ -1,19 +1,21 @@
+version: "3.9"
+
 services:
   db:
     image: postgres:16
     container_name: tps_db
     restart: always
     environment:
-      POSTGRES_DB: tps
-      POSTGRES_USER: tps
-      POSTGRES_PASSWORD: tps
+      POSTGRES_DB: ${DB_NAME:-tps}
+      POSTGRES_USER: ${DB_USER:-tps}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-tps}
     ports:
-      - "5432:5432"
+      - "${DB_PORT:-5432}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
-      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - ./sql/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U tps -d tps"]
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-tps} -d ${DB_NAME:-tps}"]
       interval: 3s
       timeout: 3s
       retries: 30
@@ -26,11 +28,13 @@ services:
         condition: service_healthy
     environment:
       DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: tps
-      DB_USER: tps
-      DB_PASSWORD: tps
-    command: python scripts/load.py
+      DB_NAME: ${DB_NAME:-tps}
+      DB_USER: ${DB_USER:-tps}
+      DB_PASSWORD: ${DB_PASSWORD:-tps}
+      DB_PORT: 5432
+      JSON_PATH: ${JSON_PATH:-data/videos.json}
+      SKIP_TRUNCATE: ${SKIP_TRUNCATE:-0}
+    command: ["python", "scripts/load.py"]
     restart: "no"
 
   bot:
@@ -38,21 +42,20 @@ services:
     container_name: tps_bot
     restart: always
     depends_on:
-      db:
-        condition: service_healthy
       loader:
         condition: service_completed_successfully
     environment:
       BOT_TOKEN: ${BOT_TOKEN}
       GIGACHAT_AUTH_KEY: ${GIGACHAT_AUTH_KEY}
-      GIGACHAT_SCOPE: ${GIGACHAT_SCOPE}
-      GIGACHAT_MODEL: ${GIGACHAT_MODEL}
+      GIGACHAT_SCOPE: ${GIGACHAT_SCOPE:-GIGACHAT_API_PERS}
+      GIGACHAT_MODEL: ${GIGACHAT_MODEL:-GigaChat}
+      GIGACHAT_VERIFY_SSL: ${GIGACHAT_VERIFY_SSL:-1}
       DB_HOST: db
-      DB_PORT: "5432"
-      DB_NAME: tps
-      DB_USER: tps
-      DB_PASSWORD: tps
-    command: python -m app.bot
+      DB_NAME: ${DB_NAME:-tps}
+      DB_USER: ${DB_USER:-tps}
+      DB_PASSWORD: ${DB_PASSWORD:-tps}
+      DB_PORT: 5432
+    command: ["python", "-m", "app.bot"]
 
 volumes:
   pgdata:
